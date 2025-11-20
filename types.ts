@@ -6,6 +6,21 @@ export enum GameState {
   VICTORY = 'VICTORY'
 }
 
+export type LevelPhase = 'COLLECTING' | 'BOSS_WARNING' | 'BOSS_FIGHT';
+
+export type BossBehavior = 'STATIC' | 'SIN_WAVE' | 'TRACKING' | 'PHASED';
+
+export interface BossConfig {
+  name: string;
+  hp: number;
+  behavior: BossBehavior;
+  projectileType: ProjectileType;
+  fireRate: number; // Frames
+  color: string;
+  width: number;
+  height: number;
+}
+
 export interface LevelConfig {
   id: number;
   name: string;
@@ -18,8 +33,7 @@ export interface LevelConfig {
   pipeGap: number;
   pipeSpawnRate: number; // Frames
   hasMovingPipes: boolean;
-  isBossLevel: boolean;
-  gravityMod?: number;
+  bossConfig: BossConfig;
 }
 
 export interface Bird {

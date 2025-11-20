@@ -1,16 +1,18 @@
 
 import React, { useEffect, useState } from 'react';
-import { GameState } from '../types';
-import { TARGET_WORD, LEVEL_CONFIGS, COLOR_SUCCESS, COLOR_DANGER } from '../constants';
+import { GameState, LevelPhase } from '../types';
+import { TARGET_WORD, LEVEL_CONFIGS } from '../constants';
 import { generateFlavorText } from '../services/geminiService';
 
 interface UIOverlayProps {
   gameState: GameState;
+  levelPhase: LevelPhase;
   lives: number;
   collectedMask: boolean[];
-  setsCollected: number;
-  finalProgress: number;
+  currentLevelIndex: number;
+  bossHealthPercent: number;
   onRestart: () => void;
+  onSelectLevel: (index: number) => void;
 }
 
 const HeartIcon: React.FC<{ filled: boolean }> = ({ filled }) => (
@@ -21,52 +23,59 @@ const HeartIcon: React.FC<{ filled: boolean }> = ({ filled }) => (
 
 const UIOverlay: React.FC<UIOverlayProps> = ({
   gameState,
+  levelPhase,
   lives,
   collectedMask,
-  setsCollected,
-  finalProgress,
-  onRestart
+  currentLevelIndex,
+  bossHealthPercent,
+  onRestart,
+  onSelectLevel
 }) => {
   const [flavorText, setFlavorText] = useState<string>("");
   const [loadingFlavor, setLoadingFlavor] = useState(false);
   
-  const levelIndex = Math.min(setsCollected, LEVEL_CONFIGS.length - 1);
+  const levelIndex = Math.min(currentLevelIndex, LEVEL_CONFIGS.length - 1);
   const currentLevel = LEVEL_CONFIGS[levelIndex];
-  const isBossLevel = currentLevel.isBossLevel;
-
-  const phase = finalProgress <= 25 ? 'CRITICAL (PHASE 3)' : finalProgress <= 50 ? 'ACTIVE (PHASE 2)' : 'IDLE (PHASE 1)';
-  const phaseColor = finalProgress <= 25 ? 'text-red-500' : finalProgress <= 50 ? 'text-orange-400' : 'text-slate-400';
 
   useEffect(() => {
     if (gameState === GameState.GAME_OVER || gameState === GameState.VICTORY) {
       setLoadingFlavor(true);
-      generateFlavorText(gameState, setsCollected).then(text => {
+      generateFlavorText(gameState, currentLevelIndex).then(text => {
         setFlavorText(text);
         setLoadingFlavor(false);
       });
     } else {
       setFlavorText("");
     }
-  }, [gameState, setsCollected]);
+  }, [gameState, currentLevelIndex]);
 
   if (gameState === GameState.START) {
     return (
-      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm z-10 text-white">
-        <h1 className="text-6xl font-bold mb-4 tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-pink-600">
+      <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 z-10 text-white p-6">
+        <h1 className="text-5xl font-bold mb-6 tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-pink-600">
           GEMINI FLIGHT
         </h1>
-        <div className="bg-slate-800 p-6 rounded-lg border border-slate-600 max-w-md text-center">
-          <p className="mb-4 text-lg text-slate-300">CAMPAIGN MODE</p>
-          <p className="mb-4 text-sm text-slate-400">
-            Complete 5 Sectors to reach THE CORE.<br/>
-            Collect <span className="text-emerald-400 font-bold">G-E-M-I-N-I</span> to advance.
-          </p>
-          <button 
-            className="px-8 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded animate-pulse"
-            onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }))}
-          >
-            LAUNCH CAMPAIGN
-          </button>
+        <p className="text-slate-400 mb-8 tracking-widest text-sm">SELECT MISSION SECTOR</p>
+        
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 w-full max-w-3xl">
+          {LEVEL_CONFIGS.map((level, idx) => (
+             <button
+               key={level.id}
+               onClick={() => onSelectLevel(idx)}
+               className="group relative overflow-hidden rounded-lg border border-slate-700 bg-slate-900 p-4 text-left transition-all hover:border-white hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-indigo-500"
+             >
+               <div className="absolute inset-0 opacity-0 group-hover:opacity-20 transition-opacity" 
+                    style={{ background: `linear-gradient(to bottom right, ${level.bgColorTop}, ${level.bgColorBottom})` }} 
+               />
+               <div className="relative z-10">
+                 <div className="text-xs font-mono text-slate-500 mb-1">SECTOR 0{level.id}</div>
+                 <div className="font-bold text-lg text-white mb-1 group-hover:text-indigo-300">{level.name}</div>
+                 <div className="text-[10px] uppercase tracking-wider text-slate-400">
+                    Target: <span style={{ color: level.bossConfig.color }}>{level.bossConfig.name}</span>
+                 </div>
+               </div>
+             </button>
+          ))}
         </div>
       </div>
     );
@@ -75,6 +84,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({
   return (
     <div className="absolute inset-0 pointer-events-none flex flex-col justify-between p-4 z-10">
       
+      {/* HUD TOP */}
       <div className="flex justify-between items-start w-full">
         <div className="flex gap-1">
           {Array.from({ length: 5 }).map((_, i) => (
@@ -84,17 +94,20 @@ const UIOverlay: React.FC<UIOverlayProps> = ({
 
         <div className="flex flex-col items-center">
            <h3 className="text-lg font-bold text-white bg-slate-900/50 px-4 py-1 rounded border border-slate-700 backdrop-blur-sm">
-             SECTOR {levelIndex + 1}: <span className="text-indigo-400">{currentLevel.name}</span>
+             LEVEL {levelIndex + 1}: <span className="text-indigo-400">{currentLevel.name}</span>
            </h3>
            <p className="text-[10px] text-slate-400 tracking-widest">{currentLevel.subtitle}</p>
         </div>
 
-        <div className="w-24"></div> 
+        <div className="w-24 text-right text-xs text-slate-500 font-mono">
+          PHASE: <span className={levelPhase === 'BOSS_FIGHT' ? 'text-red-500 font-bold' : 'text-emerald-500'}>{levelPhase}</span>
+        </div> 
       </div>
 
-      <div className="flex justify-center mt-2">
-        {!isBossLevel ? (
-          <div className="flex flex-col items-center bg-slate-900/80 p-2 rounded border border-slate-700">
+      {/* HUD CENTER */}
+      <div className="flex justify-center mt-4">
+        {levelPhase === 'COLLECTING' ? (
+          <div className="flex flex-col items-center bg-slate-900/80 p-2 rounded border border-slate-700 transition-all">
             <div className="flex gap-2">
               {TARGET_WORD.map((char, index) => (
                 <span 
@@ -109,37 +122,45 @@ const UIOverlay: React.FC<UIOverlayProps> = ({
                 </span>
               ))}
             </div>
+            <p className="text-[10px] text-slate-400 mt-1">COLLECT TO SUMMON BOSS</p>
           </div>
         ) : (
-          <div className="flex flex-col items-center w-full max-w-md">
-            <h2 className="text-red-500 font-bold text-2xl animate-pulse tracking-widest">CORE INTEGRITY</h2>
-            <div className="w-full h-4 bg-slate-900 rounded mt-2 border border-red-900 overflow-hidden relative">
-               <div className="h-full bg-red-600 transition-all duration-200 ease-out" style={{ width: `${finalProgress}%` }} />
+          <div className="flex flex-col items-center w-full max-w-md animate-in fade-in zoom-in duration-300">
+            <h2 className="text-red-500 font-bold text-2xl animate-pulse tracking-widest uppercase">
+              WARNING: {currentLevel.bossConfig.name}
+            </h2>
+            <div className="w-full h-6 bg-slate-900 rounded mt-2 border-2 border-red-900 overflow-hidden relative shadow-lg shadow-red-900/50">
+               <div className="h-full bg-gradient-to-r from-red-600 to-red-500 transition-all duration-200 ease-out" style={{ width: `${bossHealthPercent}%` }} />
             </div>
-            <p className={`text-xs mt-2 font-bold ${phaseColor}`}>THREAT: {phase}</p>
+            {currentLevel.bossConfig.behavior === 'PHASED' && (
+               <div className="text-xs text-red-400 mt-1 animate-pulse font-mono">
+                 THREAT LEVEL: {bossHealthPercent > 50 ? 'NORMAL' : bossHealthPercent > 25 ? 'ELEVATED' : 'CRITICAL'}
+               </div>
+            )}
           </div>
         )}
       </div>
 
+      {/* END SCREEN */}
       {(gameState === GameState.GAME_OVER || gameState === GameState.VICTORY) && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/80 backdrop-blur-sm pointer-events-auto">
            <div className={`p-8 rounded-lg border-2 max-w-md text-center shadow-2xl 
              ${gameState === GameState.VICTORY ? 'bg-slate-800 border-emerald-500' : 'bg-slate-900 border-red-500'}`}>
              
              <h2 className={`text-4xl font-bold mb-2 ${gameState === GameState.VICTORY ? 'text-emerald-400' : 'text-red-500'}`}>
-               {gameState === GameState.VICTORY ? 'CAMPAIGN VICTORY' : 'SIGNAL LOST'}
+               {gameState === GameState.VICTORY ? 'MISSION ACCOMPLISHED' : 'MIA'}
              </h2>
              
              <div className="my-6 p-4 bg-black/40 rounded border border-slate-700 min-h-[80px] flex items-center justify-center">
                {loadingFlavor ? (
-                 <span className="animate-pulse text-slate-500">Analysing flight data...</span>
+                 <span className="animate-pulse text-slate-500">Decrypting transmission...</span>
                ) : (
                  <p className="text-slate-200 italic">"{flavorText}"</p>
                )}
              </div>
 
              <div className="text-slate-400 mb-6 text-sm">
-               REACHED SECTOR: {levelIndex + 1} / 6
+               SECTOR REACHED: {levelIndex + 1} / {LEVEL_CONFIGS.length}
              </div>
 
              <button 
@@ -147,7 +168,7 @@ const UIOverlay: React.FC<UIOverlayProps> = ({
                className={`px-8 py-3 text-white font-bold rounded transition-transform hover:scale-105
                  ${gameState === GameState.VICTORY ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-red-600 hover:bg-red-500'}`}
              >
-               RESTART MISSION
+               RETURN TO BASE
              </button>
            </div>
         </div>
