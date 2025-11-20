@@ -6,6 +6,22 @@ export enum GameState {
   VICTORY = 'VICTORY'
 }
 
+export interface LevelConfig {
+  id: number;
+  name: string;
+  subtitle: string;
+  bgColorTop: string;
+  bgColorBottom: string;
+  pipeColor: string;
+  pipeBorder: string;
+  pipeSpeed: number;
+  pipeGap: number;
+  pipeSpawnRate: number; // Frames
+  hasMovingPipes: boolean;
+  isBossLevel: boolean;
+  gravityMod?: number;
+}
+
 export interface Bird {
   x: number;
   y: number;

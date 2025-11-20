@@ -1,10 +1,9 @@
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { GameState, Bird, Pipe, FloatingLetter, Particle, PowerUp, Star, Boss, Projectile, PowerUpType } from '../types';
 import { 
-  GRAVITY, JUMP_STRENGTH, PIPE_SPEED, PIPE_SPAWN_RATE, 
-  PIPE_GAP, PIPE_WIDTH, BIRD_X, TARGET_WORD, 
-  SETS_TO_UNLOCK_FINAL,
+  GRAVITY, JUMP_STRENGTH, PIPE_WIDTH, BIRD_X, TARGET_WORD, 
+  LEVEL_CONFIGS,
   COLOR_SUCCESS, COLOR_DANGER, COLOR_SHIELD, COLOR_AMMO, COLOR_BOSS,
   COLOR_SPLIT, COLOR_LASER, COLOR_BOOMERANG, COLOR_ENEMY_BOLT,
   PIPE_MOVE_AMPLITUDE, PIPE_MOVE_SPEED, POWERUP_SPAWN_CHANCE,
@@ -20,7 +19,7 @@ interface GameCanvasProps {
   setLives: (fn: (prev: number) => number) => void;
   collectedMask: boolean[];
   setCollectedMask: (fn: (prev: boolean[]) => boolean[]) => void;
-  setsCollected: number;
+  setsCollected: number; // Treated as Level Index (0-5)
   setSetsCollected: (fn: (prev: number) => number) => void;
   setFinalProgress: (val: number) => void;
 }
@@ -40,6 +39,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
   const requestRef = useRef<number>(0);
   const frameCountRef = useRef(0);
   const invulnerableRef = useRef(0); 
+  const warpRef = useRef(0); // Frame counter for warp effect during level transition
   
   // Mutable game state references
   const birdRef = useRef<Bird>({ x: BIRD_X, y: 300, velocity: 0, radius: 20, rotation: 0, hasShield: false });
@@ -56,6 +56,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     oscillationOffset: 0, isHit: 0, attackTimer: 0, phase: 1
   });
   const projectilesRef = useRef<Projectile[]>([]);
+
+  // Current Level Config
+  const levelIndex = Math.min(setsCollected, LEVEL_CONFIGS.length - 1);
+  const currentLevel = LEVEL_CONFIGS[levelIndex];
 
   const createExplosion = (x: number, y: number, color: string, count: number = 15) => {
     for (let i = 0; i < count; i++) {
@@ -95,6 +99,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
     
     frameCountRef.current = 0;
     invulnerableRef.current = 0;
+    warpRef.current = 0;
     
     setCollectedMask(() => new Array(TARGET_WORD.length).fill(false));
     setSetsCollected(() => 0);
@@ -124,6 +129,18 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       resetGame();
     }
   }, [gameState, resetGame]);
+
+  // Clear items on level change to prevent cheap deaths
+  useEffect(() => {
+     pipesRef.current = [];
+     lettersRef.current = [];
+     powerUpsRef.current = [];
+     projectilesRef.current = [];
+     warpRef.current = 60; // Trigger visual warp effect for 60 frames
+     // Reset Bird pos slightly
+     birdRef.current.y = 300;
+     birdRef.current.velocity = 0;
+  }, [setsCollected]);
 
   const handleJump = useCallback(() => {
     if (gameState === GameState.PLAYING || gameState === GameState.START) {
@@ -165,7 +182,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
     if (gameState === GameState.PLAYING) {
       frameCountRef.current++;
-      const isFinalLevel = setsCollected >= SETS_TO_UNLOCK_FINAL;
+      if (warpRef.current > 0) warpRef.current--;
+
       const bird = birdRef.current;
       
       // --- DAMAGE HELPER ---
@@ -187,8 +205,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       };
 
-      // --- BOSS LOGIC (Final Level) ---
-      if (isFinalLevel) {
+      // --- BOSS LOGIC (Strictly Level 6) ---
+      if (currentLevel.isBossLevel) {
         const boss = bossRef.current;
         
         // DETERMINE PHASE
@@ -200,10 +218,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         // Hover movement (Faster in Phase 3)
         boss.oscillationOffset += boss.phase === 3 ? 0.1 : 0.03;
         let targetY = (height / 2) + Math.sin(boss.oscillationOffset) * 150;
-        
-        // Shake in phase 3
-        if (boss.phase === 3) targetY += (Math.random() - 0.5) * 10;
-        
+        if (boss.phase === 3) targetY += (Math.random() - 0.5) * 10; // Shake
         boss.y += (targetY - boss.y) * 0.1;
         boss.y = Math.max(boss.height/2, Math.min(height - boss.height/2, boss.y));
         
@@ -246,101 +261,68 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         if (!p.active) return;
         
         if (p.type === 'ENEMY_BOLT') {
-          // Logic for Enemy Bullets
           p.x += p.vx;
           p.y += p.vy;
-          // Check collision with player
           const dist = Math.sqrt((p.x - bird.x)**2 + (p.y - bird.y)**2);
           if (dist < bird.radius + 10) {
             takeDamage({x: p.x, y: p.y});
             p.active = false;
           }
         } else {
-          // Logic for Player Bullets
+          // Player Weapons
           const boss = bossRef.current;
           
           if (p.type === 'BOOMERANG') {
-             // BOOMERANG LOGIC: Player -> Behind Boss -> Player
              let targetX = 0, targetY = 0;
-             
              if (p.returnState === 'OUT') {
-                // Target a point behind the boss
-                targetX = boss.x + 200; 
-                targetY = boss.y;
-                
-                // Check if we reached the apex
+                targetX = boss.x + 200; targetY = boss.y;
                 const distToApex = Math.sqrt((p.x - targetX)**2 + (p.y - targetY)**2);
-                if (distToApex < 50 || p.x > targetX) {
-                    p.returnState = 'RETURN';
-                }
+                if (distToApex < 50 || p.x > targetX) p.returnState = 'RETURN';
              } else {
-                // Return to player
-                targetX = bird.x;
-                targetY = bird.y;
+                targetX = bird.x; targetY = bird.y;
              }
-             
-             const dx = targetX - p.x;
-             const dy = targetY - p.y;
-             const angle = Math.atan2(dy, dx);
-             
-             // Smooth steering
+             const dx = targetX - p.x; const dy = targetY - p.y; const angle = Math.atan2(dy, dx);
              p.vx = Math.cos(angle) * PROJECTILE_SPEED_BOOMERANG;
              p.vy = Math.sin(angle) * PROJECTILE_SPEED_BOOMERANG;
-             
-             p.x += p.vx;
-             p.y += p.vy;
+             p.x += p.vx; p.y += p.vy;
              
           } else if (p.type === 'LASER') {
-             // LASER LOGIC: High speed tracking
-             const dx = boss.x - p.x;
-             const dy = boss.y - p.y;
-             const dist = Math.sqrt(dx*dx + dy*dy);
-             
+             const dx = boss.x - p.x; const dy = boss.y - p.y; const dist = Math.sqrt(dx*dx + dy*dy);
              if (dist > 0) {
-               // Update velocity to track boss
                p.vx = (dx / dist) * PROJECTILE_SPEED_LASER;
                p.vy = (dy / dist) * PROJECTILE_SPEED_LASER;
              }
-             p.x += p.vx;
-             p.y += p.vy;
-             
+             p.x += p.vx; p.y += p.vy;
           } else {
-             // Standard & Split Homing
-             const dx = boss.x - p.x;
-             const dy = boss.y - p.y;
-             const dist = Math.sqrt(dx*dx + dy*dy);
+             // Standard Homing
+             const dx = boss.x - p.x; const dy = boss.y - p.y; const dist = Math.sqrt(dx*dx + dy*dy);
              if (dist > 0) {
                p.x += (dx / dist) * PROJECTILE_SPEED_STANDARD;
                p.y += (dy / dist) * PROJECTILE_SPEED_STANDARD;
              }
           }
 
-          // Check Collision with Boss
-          const distToBoss = Math.sqrt((p.x - boss.x)**2 + (p.y - boss.y)**2);
-          
-          if (distToBoss < boss.width/2 + 20) {
-             if (p.type === 'BOOMERANG') {
-               // Boomerang passes through
-               // Limit hit rate to prevent instant melt, but make it frequent enough
-               if (frameCountRef.current % 5 === 0) { 
-                   boss.health -= p.damage * 0.2; 
-                   boss.isHit = 2;
-                   createExplosion(p.x, p.y, COLOR_BOOMERANG, 1);
+          if (currentLevel.isBossLevel) {
+             const distToBoss = Math.sqrt((p.x - boss.x)**2 + (p.y - boss.y)**2);
+             if (distToBoss < boss.width/2 + 20) {
+               if (p.type === 'BOOMERANG') {
+                 if (frameCountRef.current % 5 === 0) { 
+                     boss.health -= p.damage * 0.2; 
+                     boss.isHit = 2;
+                     createExplosion(p.x, p.y, COLOR_BOOMERANG, 1);
+                 }
+               } else {
+                 p.active = false;
+                 boss.health -= p.damage;
+                 boss.isHit = 10;
+                 createExplosion(p.x, p.y, p.type === 'LASER' ? COLOR_LASER : COLOR_AMMO, 10);
                }
-             } else {
-               p.active = false;
-               boss.health -= p.damage;
-               boss.isHit = 10;
-               createExplosion(p.x, p.y, p.type === 'LASER' ? COLOR_LASER : COLOR_AMMO, 10);
+               setFinalProgress((boss.health / boss.maxHealth) * 100);
              }
-             setFinalProgress((boss.health / boss.maxHealth) * 100);
           }
         }
         
-        // Cleanup out of bounds
-        if (p.x < -200 || p.x > width + 300 || p.y < -200 || p.y > height + 200) {
-            p.active = false;
-        }
+        if (p.x < -200 || p.x > width + 300 || p.y < -200 || p.y > height + 200) p.active = false;
       });
       projectilesRef.current = projectilesRef.current.filter(p => p.active);
 
@@ -349,75 +331,59 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       bird.y += bird.velocity;
       bird.rotation = Math.min(Math.PI / 4, Math.max(-Math.PI / 4, (bird.velocity * 0.1)));
 
-      // World Bounds
       if (bird.y + bird.radius >= height || bird.y - bird.radius <= 0) {
          takeDamage({x: bird.x, y: bird.y});
          bird.y = Math.max(bird.radius, Math.min(height - bird.radius, bird.y));
          if (bird.y >= height - bird.radius) bird.y = height - 50; 
       }
 
-      // --- SPAWNING (Pipes & Items) ---
-      const currentSpeed = isFinalLevel ? PIPE_SPEED * 1.2 + (bossRef.current.phase === 3 ? 2 : 0) : PIPE_SPEED;
-      const spawnRateDivisor = isFinalLevel ? 1.1 : 1;
+      // --- SPAWNING ---
+      // Dynamic difficulty based on Level Config
+      const spawnRate = currentLevel.pipeSpawnRate;
+      const gapSize = currentLevel.pipeGap;
+      const speed = currentLevel.pipeSpeed;
       
-      if (frameCountRef.current % Math.floor(PIPE_SPAWN_RATE / spawnRateDivisor) === 0) {
+      // Stop pipes in Boss Phase 3
+      const pipesEnabled = !(currentLevel.isBossLevel && bossRef.current.phase === 3);
+
+      if (frameCountRef.current % spawnRate === 0 && warpRef.current === 0) {
         const minPipeH = 50;
-        const maxPipeH = height - PIPE_GAP - minPipeH;
+        const maxPipeH = height - gapSize - minPipeH;
         const randomH = Math.floor(Math.random() * (maxPipeH - minPipeH + 1)) + minPipeH;
         
-        // *** CRITICAL: STOP PIPES IN PHASE 3 ***
-        const shouldSpawnPipe = !isFinalLevel || bossRef.current.phase < 3;
-
-        if (shouldSpawnPipe) {
-          const isMovingPipe = Math.random() < 0.4;
+        if (pipesEnabled) {
           pipesRef.current.push({
             x: width,
             topHeight: randomH,
             originalTopHeight: randomH,
             width: PIPE_WIDTH,
             passed: false,
-            isMoving: isMovingPipe,
+            isMoving: currentLevel.hasMovingPipes && Math.random() < 0.5,
             moveOffset: Math.random() * Math.PI * 2
           });
         }
 
-        // Item Spawning (Decoupled from pipes for Phase 3)
         const spawnX = width + 30;
-        const spawnY = randomH + (PIPE_GAP / 2); // Use the calculated height even if pipe doesn't spawn
-        
-        // Make sure spawnY is valid if no pipe
-        const safeSpawnY = shouldSpawnPipe ? spawnY : Math.random() * (height - 100) + 50;
+        const spawnY = pipesEnabled ? randomH + (gapSize / 2) : Math.random() * (height - 100) + 50;
 
-        if (isFinalLevel) {
-          // Final Level: Spawn Weapons
+        if (currentLevel.isBossLevel) {
+          // Boss Level Spawns
           const rand = Math.random();
           let type: PowerUpType = 'AMMO';
           if (rand > 0.9) type = 'LASER';
           else if (rand > 0.8) type = 'SPLIT';
           else if (rand > 0.7) type = 'BOOMERANG';
-          else if (rand > 0.65) type = 'SHIELD'; // Rare shield in final
-
-          powerUpsRef.current.push({
-            id: Math.random().toString(),
-            x: spawnX,
-            y: safeSpawnY,
-            type: type,
-            collected: false
-          });
+          else if (rand > 0.65) type = 'SHIELD';
+          
+          powerUpsRef.current.push({ id: Math.random().toString(), x: spawnX, y: spawnY, type, collected: false });
         } else {
-          // Normal Level
+          // Normal Level Spawns
           if (Math.random() < POWERUP_SPAWN_CHANCE) {
-             powerUpsRef.current.push({
-               id: Math.random().toString(),
-               x: spawnX,
-               y: safeSpawnY,
-               type: 'SHIELD',
-               collected: false
-             });
+             powerUpsRef.current.push({ id: Math.random().toString(), x: spawnX, y: spawnY, type: 'SHIELD', collected: false });
           } else {
             const neededIndices = collectedMask.map((val, idx) => val ? -1 : idx).filter(i => i !== -1);
-            let charToSpawn: string;
-            if (neededIndices.length > 0 && Math.random() < 0.6) {
+            let charToSpawn = 'G';
+            if (neededIndices.length > 0 && Math.random() < 0.7) {
               const randomNeededIndex = neededIndices[Math.floor(Math.random() * neededIndices.length)];
               charToSpawn = TARGET_WORD[randomNeededIndex];
             } else {
@@ -426,7 +392,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             lettersRef.current.push({
               id: Math.random().toString(),
               x: spawnX,
-              y: safeSpawnY,
+              y: spawnY,
               char: charToSpawn,
               collected: false,
               oscillationOffset: Math.random() * Math.PI * 2
@@ -435,54 +401,48 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
 
-      // --- ENTITY UPDATES ---
+      // --- UPDATES ---
       pipesRef.current.forEach(pipe => {
-        pipe.x -= currentSpeed;
+        pipe.x -= speed;
         if (pipe.isMoving) {
           pipe.moveOffset += PIPE_MOVE_SPEED;
           const delta = Math.sin(pipe.moveOffset) * PIPE_MOVE_AMPLITUDE;
-          pipe.topHeight = Math.max(20, Math.min(height - PIPE_GAP - 20, pipe.originalTopHeight + delta));
+          pipe.topHeight = Math.max(20, Math.min(height - gapSize - 20, pipe.originalTopHeight + delta));
         }
       });
 
-      // Filter
       pipesRef.current = pipesRef.current.filter(p => p.x + p.width > -50);
       lettersRef.current = lettersRef.current.filter(l => l.x > -50 && !l.collected);
       powerUpsRef.current = powerUpsRef.current.filter(p => p.x > -50 && !p.collected);
 
-      // --- COLLISIONS ---
-      
-      // 1. Pipes
+      // --- COLLISION & COLLECTION ---
       pipesRef.current.forEach(pipe => {
         if (bird.x + bird.radius > pipe.x && bird.x - bird.radius < pipe.x + pipe.width) {
-          if (bird.y - bird.radius < pipe.topHeight || bird.y + bird.radius > pipe.topHeight + PIPE_GAP) {
+          if (bird.y - bird.radius < pipe.topHeight || bird.y + bird.radius > pipe.topHeight + gapSize) {
             takeDamage({x: bird.x, y: bird.y});
           }
         }
       });
 
-      // 2. Items & Powerups
       const checkCollection = (itemX: number, itemY: number, radius: number) => {
-          const dx = bird.x - itemX;
-          const dy = bird.y - itemY;
+          const dx = bird.x - itemX; const dy = bird.y - itemY;
           return Math.sqrt(dx*dx + dy*dy) < bird.radius + radius;
       };
 
-      if (!isFinalLevel) {
-        // ... Letter collection code (unchanged) ...
+      if (!currentLevel.isBossLevel) {
         lettersRef.current.forEach(letter => {
           if (checkCollection(letter.x, letter.y, 20)) {
             letter.collected = true;
-            const char = letter.char;
-            const targetIndex = TARGET_WORD.findIndex((c, i) => c === char && !collectedMask[i]);
+            const targetIndex = TARGET_WORD.findIndex((c, i) => c === letter.char && !collectedMask[i]);
             if (targetIndex !== -1) {
               createExplosion(letter.x, letter.y, COLOR_SUCCESS);
               setCollectedMask(prev => {
                 const newMask = [...prev];
                 newMask[targetIndex] = true;
+                // LEVEL COMPLETE CHECK
                 if (newMask.every(b => b)) {
-                  setLives(l => l + 1); 
-                  setSetsCollected(s => s + 1);
+                  setLives(l => Math.min(l + 1, 5)); 
+                  setSetsCollected(s => s + 1); // Advance Level
                   return new Array(TARGET_WORD.length).fill(false);
                 }
                 return newMask;
@@ -491,310 +451,194 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
               createExplosion(letter.x, letter.y, '#ffffff');
             }
           } else {
-            letter.x -= currentSpeed;
+            letter.x -= speed;
             letter.y += Math.sin(frameCountRef.current * 0.05 + letter.oscillationOffset) * 0.5;
           }
         });
       }
 
-      // Powerups (Shields & Ammo/Weapons)
       powerUpsRef.current.forEach(p => {
         if (checkCollection(p.x, p.y, 15)) {
             p.collected = true;
-            
             if (p.type === 'SHIELD') {
               birdRef.current.hasShield = true;
               createExplosion(p.x, p.y, COLOR_SHIELD);
             } 
-            else {
-              // Weapon Firing Logic
-              
-              if (p.type === 'AMMO') {
-                projectilesRef.current.push({
-                  id: Math.random().toString(),
-                  x: bird.x, y: bird.y, vx: 0, vy: 0,
-                  type: 'STANDARD', damage: 1, active: true
-                });
-                createExplosion(p.x, p.y, COLOR_AMMO, 5);
-              } 
-              else if (p.type === 'SPLIT') {
-                 for(let i=-1; i<=1; i++) {
-                   projectilesRef.current.push({
-                    id: Math.random().toString(),
-                    x: bird.x, y: bird.y + i*20, vx: 0, vy: 0,
-                    type: 'SPLIT', damage: 1, active: true
-                   });
+            else if (p.type === 'AMMO' || p.type === 'SPLIT' || p.type === 'LASER' || p.type === 'BOOMERANG') {
+               if (!currentLevel.isBossLevel) {
+                 // In normal levels, just points/effect (shouldn't happen much based on spawn logic)
+                 createExplosion(p.x, p.y, COLOR_AMMO);
+               } else {
+                 // Weapon logic
+                 if (p.type === 'AMMO') {
+                    projectilesRef.current.push({ id: Math.random().toString(), x: bird.x, y: bird.y, vx: 0, vy: 0, type: 'STANDARD', damage: 1, active: true });
+                    createExplosion(p.x, p.y, COLOR_AMMO, 5);
+                 } else if (p.type === 'SPLIT') {
+                    for(let i=-1; i<=1; i++) projectilesRef.current.push({ id: Math.random().toString(), x: bird.x, y: bird.y + i*20, vx: 0, vy: 0, type: 'SPLIT', damage: 1, active: true });
+                    createExplosion(p.x, p.y, COLOR_SPLIT, 8);
+                 } else if (p.type === 'LASER') {
+                    projectilesRef.current.push({ id: Math.random().toString(), x: bird.x, y: bird.y, vx: PROJECTILE_SPEED_LASER, vy: 0, type: 'LASER', damage: 5, active: true });
+                    createExplosion(p.x, p.y, COLOR_LASER, 10);
+                 } else if (p.type === 'BOOMERANG') {
+                    projectilesRef.current.push({ id: Math.random().toString(), x: bird.x, y: bird.y, vx: 0, vy: 0, type: 'BOOMERANG', damage: 2, active: true, returnState: 'OUT' });
+                    createExplosion(p.x, p.y, COLOR_BOOMERANG, 5);
                  }
-                 createExplosion(p.x, p.y, COLOR_SPLIT, 8);
-              }
-              else if (p.type === 'LASER') {
-                 // Initial vector (will be updated by tracking logic)
-                 projectilesRef.current.push({
-                  id: Math.random().toString(),
-                  x: bird.x, y: bird.y, vx: PROJECTILE_SPEED_LASER, vy: 0,
-                  type: 'LASER', damage: 5, active: true
-                 });
-                 createExplosion(p.x, p.y, COLOR_LASER, 10);
-              }
-              else if (p.type === 'BOOMERANG') {
-                 // Initial vector out
-                 projectilesRef.current.push({
-                  id: Math.random().toString(),
-                  x: bird.x, y: bird.y, vx: 0, vy: 0,
-                  type: 'BOOMERANG', damage: 2, active: true,
-                  returnState: 'OUT'
-                 });
-                 createExplosion(p.x, p.y, COLOR_BOOMERANG, 5);
-              }
+               }
             }
         } else {
-            p.x -= currentSpeed;
-            p.y += Math.sin(frameCountRef.current * 0.1) * 1;
+            p.x -= speed;
         }
       });
 
-      // Boss Collision (Body)
-      if (isFinalLevel) {
+      if (currentLevel.isBossLevel) {
         const b = bossRef.current;
-        if (bird.x + bird.radius > b.x - b.width/2 &&
-            bird.x - bird.radius < b.x + b.width/2 &&
-            bird.y + bird.radius > b.y - b.height/2 &&
-            bird.y - bird.radius < b.y + b.height/2) {
+        if (bird.x + bird.radius > b.x - b.width/2 && bird.x - bird.radius < b.x + b.width/2 &&
+            bird.y + bird.radius > b.y - b.height/2 && bird.y - bird.radius < b.y + b.height/2) {
               takeDamage({x: bird.x, y: bird.y});
         }
       }
 
       // Particles
       if (invulnerableRef.current > 0) invulnerableRef.current--;
-      particlesRef.current.forEach(p => {
-        p.x += p.vx;
-        p.y += p.vy;
-        p.life--;
-      });
+      particlesRef.current.forEach(p => { p.x += p.vx; p.y += p.vy; p.life--; });
       particlesRef.current = particlesRef.current.filter(p => p.life > 0);
     }
 
     // --- VISUALS ---
-    const isFinalLevel = setsCollected >= SETS_TO_UNLOCK_FINAL;
-    
+    // Draw Background Gradient based on Level Config
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, currentLevel.bgColorTop); 
+    gradient.addColorStop(1, currentLevel.bgColorBottom);
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+
+    // Cyber Grid for Level 4
+    if (currentLevel.id === 4) {
+        ctx.strokeStyle = '#065f46'; ctx.lineWidth = 1;
+        for(let i=0; i<width; i+=40) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,height); ctx.stroke(); }
+        for(let i=0; i<height; i+=40) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(width,i); ctx.stroke(); }
+    }
+
     if (gameState === GameState.PLAYING) {
        starsRef.current.forEach(star => {
-         star.x -= star.speed * (isFinalLevel ? (bossRef.current.phase === 3 ? 4 : 2) : 1);
-         if (star.x < 0) {
-           star.x = width;
-           star.y = Math.random() * height;
-         }
+         let starSpeed = star.speed * (currentLevel.id * 0.2 + 1);
+         if (warpRef.current > 0) starSpeed *= 10; // WARP SPEED
+         star.x -= starSpeed;
+         if (star.x < 0) { star.x = width; star.y = Math.random() * height; }
        });
-       // Shake Effect in Phase 3
-       if (isFinalLevel && bossRef.current.phase === 3) {
-          const shake = (Math.random() - 0.5) * 4;
-          ctx.translate(shake, shake);
+       if (currentLevel.isBossLevel && bossRef.current.phase === 3) {
+          const shake = (Math.random() - 0.5) * 4; ctx.translate(shake, shake);
        }
     }
 
-    // Draw Background
-    if (isFinalLevel) {
-      const phase = bossRef.current.phase;
-      ctx.fillStyle = phase === 3 ? '#2a0505' : '#1a0505'; 
-      ctx.fillRect(0, 0, width, height);
-      ctx.strokeStyle = phase === 3 ? '#550000' : '#330000';
-      ctx.lineWidth = 2;
-      const offset = (frameCountRef.current * (phase === 3 ? 20 : 10)) % 50;
-      for (let x = -offset; x < width; x += 50) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
-      }
-    } else {
-      const gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, '#0f172a'); 
-      gradient.addColorStop(1, '#1e293b');
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, width, height);
-    }
-
-    // Stars
     starsRef.current.forEach(star => {
        ctx.fillStyle = `rgba(255, 255, 255, ${star.brightness})`;
        ctx.beginPath(); ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2); ctx.fill();
+       // Warp Lines
+       if (warpRef.current > 0) {
+          ctx.strokeStyle = `rgba(255, 255, 255, ${star.brightness * 0.5})`;
+          ctx.lineWidth = star.size;
+          ctx.beginPath(); ctx.moveTo(star.x, star.y); ctx.lineTo(star.x + 100, star.y); ctx.stroke();
+       }
     });
 
-    // Pipes
     pipesRef.current.forEach(pipe => {
-      ctx.fillStyle = isFinalLevel ? '#7f1d1d' : '#334155'; 
-      ctx.strokeStyle = isFinalLevel ? '#ef4444' : '#94a3b8'; 
-      if (pipe.isMoving) {
-         ctx.strokeStyle = '#f59e0b';
-         ctx.shadowColor = '#f59e0b';
-         ctx.shadowBlur = 5;
-      } else {
-         ctx.shadowBlur = 0;
-      }
+      ctx.fillStyle = currentLevel.pipeColor; 
+      ctx.strokeStyle = currentLevel.pipeBorder;
+      if (pipe.isMoving) { ctx.strokeStyle = '#f59e0b'; ctx.shadowColor = '#f59e0b'; ctx.shadowBlur = 5; } 
+      else { ctx.shadowBlur = 0; }
       ctx.lineWidth = 2;
       ctx.fillRect(pipe.x, 0, pipe.width, pipe.topHeight);
       ctx.strokeRect(pipe.x, 0, pipe.width, pipe.topHeight);
-      const bottomY = pipe.topHeight + PIPE_GAP;
+      const bottomY = pipe.topHeight + currentLevel.pipeGap;
       ctx.fillRect(pipe.x, bottomY, pipe.width, height - bottomY);
       ctx.strokeRect(pipe.x, bottomY, pipe.width, height - bottomY);
       ctx.shadowBlur = 0;
     });
 
-    // Boss
-    if (isFinalLevel) {
+    if (currentLevel.isBossLevel) {
       const b = bossRef.current;
-      ctx.save();
-      ctx.translate(b.x, b.y);
-      
-      if (b.isHit > 0) {
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.fillStyle = 'white';
-      } else {
-        ctx.fillStyle = b.phase === 3 ? '#500724' : '#7f1d1d'; // Darker in rage
-      }
-      
+      ctx.save(); ctx.translate(b.x, b.y);
+      if (b.isHit > 0) { ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = 'white'; } 
+      else { ctx.fillStyle = b.phase === 3 ? '#500724' : '#7f1d1d'; }
       ctx.beginPath(); ctx.arc(0, 0, 40, 0, Math.PI*2); ctx.fill();
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = b.phase === 3 ? '#ff0000' : '#ef4444';
-      ctx.stroke();
-
+      ctx.lineWidth = 3; ctx.strokeStyle = b.phase === 3 ? '#ff0000' : '#ef4444'; ctx.stroke();
       ctx.rotate(frameCountRef.current * (b.phase === 3 ? 0.2 : 0.05));
-      ctx.strokeStyle = '#991b1b';
-      ctx.lineWidth = 5;
-      ctx.beginPath(); ctx.arc(0, 0, 60, 0, Math.PI*(b.phase === 3 ? 1.8 : 1.5)); ctx.stroke();
-      
+      ctx.strokeStyle = '#991b1b'; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(0, 0, 60, 0, Math.PI*(b.phase === 3 ? 1.8 : 1.5)); ctx.stroke();
       ctx.restore();
     }
 
-    // Projectiles
     projectilesRef.current.forEach(p => {
-      ctx.save();
-      ctx.translate(p.x, p.y);
-      
+      ctx.save(); ctx.translate(p.x, p.y);
       let color = COLOR_AMMO;
-      if (p.type === 'LASER') color = COLOR_LASER;
-      else if (p.type === 'SPLIT') color = COLOR_SPLIT;
-      else if (p.type === 'BOOMERANG') color = COLOR_BOOMERANG;
-      else if (p.type === 'ENEMY_BOLT') color = COLOR_ENEMY_BOLT;
-
+      if (p.type === 'LASER') color = COLOR_LASER; else if (p.type === 'SPLIT') color = COLOR_SPLIT; else if (p.type === 'BOOMERANG') color = COLOR_BOOMERANG; else if (p.type === 'ENEMY_BOLT') color = COLOR_ENEMY_BOLT;
       ctx.fillStyle = color;
-      
       if (p.type === 'LASER') {
-        // Enhanced Laser Visuals
-        const angle = Math.atan2(p.vy, p.vx);
-        ctx.rotate(angle);
-        
-        // Outer Glow
-        ctx.shadowColor = color;
-        ctx.shadowBlur = 15;
-        ctx.fillStyle = color;
-        ctx.fillRect(-30, -6, 60, 12); // Thicker beam
-        
-        // Inner Core
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(-30, -2, 60, 4); // White hot core
-
+        const angle = Math.atan2(p.vy, p.vx); ctx.rotate(angle);
+        ctx.shadowColor = color; ctx.shadowBlur = 15; ctx.fillRect(-30, -6, 60, 12); 
+        ctx.shadowBlur = 0; ctx.fillStyle = '#ffffff'; ctx.fillRect(-30, -2, 60, 4);
       } else if (p.type === 'BOOMERANG') {
-        // Spinning boomerang
         ctx.rotate(frameCountRef.current * 0.5);
-        ctx.beginPath(); 
-        ctx.moveTo(0, -10); ctx.lineTo(8, 8); ctx.lineTo(0, 4); ctx.lineTo(-8, 8); 
-        ctx.closePath();
-        ctx.fill();
-        // Trail
-        ctx.shadowColor = color; ctx.shadowBlur = 5;
-        ctx.strokeStyle = color; ctx.stroke();
-        
+        ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(8, 8); ctx.lineTo(0, 4); ctx.lineTo(-8, 8); ctx.closePath(); ctx.fill();
+        ctx.shadowColor = color; ctx.shadowBlur = 5; ctx.strokeStyle = color; ctx.stroke();
       } else {
         ctx.beginPath(); ctx.arc(0,0, p.type === 'ENEMY_BOLT' ? 6 : 5, 0, Math.PI*2); ctx.fill();
-        // Trail
-        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-15, 0);
-        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-15, 0); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
       }
-      
       ctx.restore();
     });
 
-    // PowerUps
     powerUpsRef.current.forEach(p => {
-       ctx.beginPath();
-       ctx.arc(p.x, p.y, 15, 0, Math.PI * 2);
-       
-       let color = COLOR_AMMO;
-       let letter = 'A';
+       ctx.beginPath(); ctx.arc(p.x, p.y, 15, 0, Math.PI * 2);
+       let color = COLOR_AMMO; let letter = 'A';
        if (p.type === 'SHIELD') { color = COLOR_SHIELD; letter = 'S'; }
        else if (p.type === 'SPLIT') { color = COLOR_SPLIT; letter = 'x3'; }
        else if (p.type === 'LASER') { color = COLOR_LASER; letter = 'L'; }
        else if (p.type === 'BOOMERANG') { color = COLOR_BOOMERANG; letter = 'B'; }
-
-       ctx.fillStyle = color + '44'; // Transparent
-       ctx.strokeStyle = color;
-       ctx.fill();
-       ctx.lineWidth = 2;
-       ctx.stroke();
-       
-       ctx.fillStyle = '#ffffff';
-       ctx.font = 'bold 12px Arial';
-       ctx.textAlign = 'center';
-       ctx.textBaseline = 'middle';
-       ctx.fillText(letter, p.x, p.y);
+       ctx.fillStyle = color + '44'; ctx.strokeStyle = color; ctx.fill(); ctx.lineWidth = 2; ctx.stroke();
+       ctx.fillStyle = '#ffffff'; ctx.font = 'bold 12px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(letter, p.x, p.y);
     });
 
-    // Letters (Normal Mode)
-    if (!isFinalLevel) {
-      ctx.font = "bold 24px 'Space Mono'";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
+    if (!currentLevel.isBossLevel) {
+      ctx.font = "bold 24px 'Space Mono'"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       lettersRef.current.forEach(letter => {
         const isNeeded = TARGET_WORD.some((c, i) => c === letter.char && !collectedMask[i]);
         ctx.beginPath(); ctx.arc(letter.x, letter.y, 20, 0, Math.PI * 2);
-        ctx.fillStyle = isNeeded ? COLOR_SUCCESS : '#475569'; 
-        ctx.fill();
+        ctx.fillStyle = isNeeded ? COLOR_SUCCESS : '#475569'; ctx.fill();
         ctx.lineWidth = 2; ctx.strokeStyle = '#ffffff'; ctx.stroke();
         ctx.fillStyle = '#ffffff'; ctx.fillText(letter.char, letter.x, letter.y + 2);
       });
     }
 
-    // Particles
     particlesRef.current.forEach(p => {
-      ctx.fillStyle = p.color;
-      ctx.globalAlpha = p.life / 30;
+      ctx.fillStyle = p.color; ctx.globalAlpha = p.life / 30;
       ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1.0;
     });
 
-    // Bird
     const bird = birdRef.current;
     if (invulnerableRef.current === 0 || Math.floor(frameCountRef.current / 4) % 2 === 0) {
-      ctx.save();
-      ctx.translate(bird.x, bird.y);
-      ctx.rotate(bird.rotation);
-      
+      ctx.save(); ctx.translate(bird.x, bird.y); ctx.rotate(bird.rotation);
       if (bird.hasShield) {
         ctx.beginPath(); ctx.arc(0, 0, bird.radius + 8, 0, Math.PI * 2);
         ctx.strokeStyle = COLOR_SHIELD; ctx.lineWidth = 2; ctx.setLineDash([5, 3]); ctx.stroke();
         ctx.setLineDash([]); ctx.fillStyle = 'rgba(6, 182, 212, 0.2)'; ctx.fill();
       }
-
       ctx.beginPath(); ctx.arc(0, 0, bird.radius, 0, Math.PI * 2);
-      ctx.fillStyle = isFinalLevel ? '#fca5a5' : '#fbbf24'; ctx.fill();
-      
+      ctx.fillStyle = currentLevel.isBossLevel ? '#fca5a5' : '#fbbf24'; ctx.fill();
       ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(8, -5, 6, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(10, -5, 2, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = isFinalLevel ? '#b91c1c' : '#f59e0b';
+      ctx.fillStyle = currentLevel.isBossLevel ? '#b91c1c' : '#f59e0b';
       ctx.beginPath(); ctx.ellipse(-5, 5, 10, 6, 0.2, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
-    
-    // Reset transform for next frame shake
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-
     requestRef.current = requestAnimationFrame(update);
-  }, [gameState, lives, collectedMask, setsCollected, setGameState, setLives, setFinalProgress, setCollectedMask, setSetsCollected]);
+  }, [gameState, lives, collectedMask, setsCollected, setGameState, setLives, setFinalProgress, setCollectedMask, setSetsCollected, currentLevel]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(update);
-    return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-    };
+    return () => { if (requestRef.current) cancelAnimationFrame(requestRef.current); };
   }, [update]);
 
   return (
