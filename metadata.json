@@ -1,0 +1,5 @@
+{
+  "name": "Gemini Flight: Protocol 3",
+  "description": "A physics-based arcade game where you collect GEMINI letters to upgrade your system health. Survive the final protocol to win.",
+  "requestFramePermissions": []
+}
