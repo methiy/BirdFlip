@@ -258,23 +258,54 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
         } else {
           // Logic for Player Bullets
           const boss = bossRef.current;
+          
           if (p.type === 'BOOMERANG') {
+             // BOOMERANG LOGIC: Player -> Behind Boss -> Player
+             let targetX = 0, targetY = 0;
+             
+             if (p.returnState === 'OUT') {
+                // Target a point behind the boss
+                targetX = boss.x + 200; 
+                targetY = boss.y;
+                
+                // Check if we reached the apex
+                const distToApex = Math.sqrt((p.x - targetX)**2 + (p.y - targetY)**2);
+                if (distToApex < 50 || p.x > targetX) {
+                    p.returnState = 'RETURN';
+                }
+             } else {
+                // Return to player
+                targetX = bird.x;
+                targetY = bird.y;
+             }
+             
+             const dx = targetX - p.x;
+             const dy = targetY - p.y;
+             const angle = Math.atan2(dy, dx);
+             
+             // Smooth steering
+             p.vx = Math.cos(angle) * PROJECTILE_SPEED_BOOMERANG;
+             p.vy = Math.sin(angle) * PROJECTILE_SPEED_BOOMERANG;
+             
              p.x += p.vx;
              p.y += p.vy;
              
-             // Boomerang physics
-             if (p.returnState === 'OUT') {
-               p.vx -= 0.2; // Decelerate
-               if (p.vx < -PROJECTILE_SPEED_BOOMERANG) p.returnState = 'RETURN';
-             } else {
-               // Should technically fly back to player, but simple return sweep is fun
-               // Keep flying left
-             }
           } else if (p.type === 'LASER') {
+             // LASER LOGIC: High speed tracking
+             const dx = boss.x - p.x;
+             const dy = boss.y - p.y;
+             const dist = Math.sqrt(dx*dx + dy*dy);
+             
+             if (dist > 0) {
+               // Update velocity to track boss
+               p.vx = (dx / dist) * PROJECTILE_SPEED_LASER;
+               p.vy = (dy / dist) * PROJECTILE_SPEED_LASER;
+             }
              p.x += p.vx;
              p.y += p.vy;
+             
           } else {
-             // Standard Homing
+             // Standard & Split Homing
              const dx = boss.x - p.x;
              const dy = boss.y - p.y;
              const dist = Math.sqrt(dx*dx + dy*dy);
@@ -286,28 +317,30 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
 
           // Check Collision with Boss
           const distToBoss = Math.sqrt((p.x - boss.x)**2 + (p.y - boss.y)**2);
-          // Boomerang can hit multiple times, others single hit
-          if (distToBoss < boss.width/2 + 10) {
+          
+          if (distToBoss < boss.width/2 + 20) {
              if (p.type === 'BOOMERANG') {
-               // Only damage every 10 frames for boomerang passing through
-               // For simplicity, let's just let it hit once per pass? 
-               // Let's make it always hit but destroy if not boomerang
-               // Or simple: Boomerang pierces.
-               boss.health -= p.damage * 0.1; // Continuous damage
-               boss.isHit = 2;
-               createExplosion(p.x, p.y, COLOR_AMMO, 2);
+               // Boomerang passes through
+               // Limit hit rate to prevent instant melt, but make it frequent enough
+               if (frameCountRef.current % 5 === 0) { 
+                   boss.health -= p.damage * 0.2; 
+                   boss.isHit = 2;
+                   createExplosion(p.x, p.y, COLOR_BOOMERANG, 1);
+               }
              } else {
                p.active = false;
                boss.health -= p.damage;
                boss.isHit = 10;
-               createExplosion(p.x, p.y, COLOR_AMMO, 10);
+               createExplosion(p.x, p.y, p.type === 'LASER' ? COLOR_LASER : COLOR_AMMO, 10);
              }
              setFinalProgress((boss.health / boss.maxHealth) * 100);
           }
         }
         
         // Cleanup out of bounds
-        if (p.x < -100 || p.x > width + 100) p.active = false;
+        if (p.x < -200 || p.x > width + 300 || p.y < -200 || p.y > height + 200) {
+            p.active = false;
+        }
       });
       projectilesRef.current = projectilesRef.current.filter(p => p.active);
 
@@ -475,9 +508,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
             } 
             else {
               // Weapon Firing Logic
-              const targetX = bossRef.current.x;
-              const targetY = bossRef.current.y;
-
+              
               if (p.type === 'AMMO') {
                 projectilesRef.current.push({
                   id: Math.random().toString(),
@@ -497,6 +528,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  createExplosion(p.x, p.y, COLOR_SPLIT, 8);
               }
               else if (p.type === 'LASER') {
+                 // Initial vector (will be updated by tracking logic)
                  projectilesRef.current.push({
                   id: Math.random().toString(),
                   x: bird.x, y: bird.y, vx: PROJECTILE_SPEED_LASER, vy: 0,
@@ -505,9 +537,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
                  createExplosion(p.x, p.y, COLOR_LASER, 10);
               }
               else if (p.type === 'BOOMERANG') {
+                 // Initial vector out
                  projectilesRef.current.push({
                   id: Math.random().toString(),
-                  x: bird.x, y: bird.y, vx: PROJECTILE_SPEED_BOOMERANG, vy: 0,
+                  x: bird.x, y: bird.y, vx: 0, vy: 0,
                   type: 'BOOMERANG', damage: 2, active: true,
                   returnState: 'OUT'
                  });
@@ -644,8 +677,32 @@ const GameCanvas: React.FC<GameCanvasProps> = ({
       ctx.fillStyle = color;
       
       if (p.type === 'LASER') {
-        ctx.fillRect(-20, -3, 40, 6);
-        ctx.shadowColor = color; ctx.shadowBlur = 10;
+        // Enhanced Laser Visuals
+        const angle = Math.atan2(p.vy, p.vx);
+        ctx.rotate(angle);
+        
+        // Outer Glow
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 15;
+        ctx.fillStyle = color;
+        ctx.fillRect(-30, -6, 60, 12); // Thicker beam
+        
+        // Inner Core
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(-30, -2, 60, 4); // White hot core
+
+      } else if (p.type === 'BOOMERANG') {
+        // Spinning boomerang
+        ctx.rotate(frameCountRef.current * 0.5);
+        ctx.beginPath(); 
+        ctx.moveTo(0, -10); ctx.lineTo(8, 8); ctx.lineTo(0, 4); ctx.lineTo(-8, 8); 
+        ctx.closePath();
+        ctx.fill();
+        // Trail
+        ctx.shadowColor = color; ctx.shadowBlur = 5;
+        ctx.strokeStyle = color; ctx.stroke();
+        
       } else {
         ctx.beginPath(); ctx.arc(0,0, p.type === 'ENEMY_BOLT' ? 6 : 5, 0, Math.PI*2); ctx.fill();
         // Trail
